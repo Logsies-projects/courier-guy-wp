@@ -1,0 +1,126 @@
+# Security workflow: CodeQL, secret scanning (gitleaks), composer audit, PHPCS (WordPress)
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: php
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+  gitleaks:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: zricethezav/gitleaks-action@v2
+        with:
+          args: detect --source . --report-path gitleaks-report.json || true
+      - name: Upload gitleaks report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+
+  composer-audit:
+    name: Composer audit (if composer.json exists)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for composer.json
+        id: has_composer
+        run: |
+          if [ -f composer.json ]; then echo "exists=true" >> $GITHUB_OUTPUT; else echo "exists=false" >> $GITHUB_OUTPUT; fi
+      - name: Set up PHP
+        if: steps.has_composer.outputs.exists == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+      - name: Install composer deps
+        if: steps.has_composer.outputs.exists == 'true'
+        run: composer install --no-progress --no-suggest --prefer-dist
+      - name: Composer audit
+        if: steps.has_composer.outputs.exists == 'true'
+        run: composer audit --format=json > composer-audit.json || true
+      - name: Upload composer audit
+        if: steps.has_composer.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer-audit
+          path: composer-audit.json
+
+  phpcs-wp:
+    name: PHPCS (WordPress Coding Standards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for PHP files
+        id: has_php
+        run: |
+          if git ls-files '*.php' | grep -q '.'; then echo "exists=true" >> $GITHUB_OUTPUT; else echo "exists=false" >> $GITHUB_OUTPUT; fi
+      - name: Set up PHP
+        if: steps.has_php.outputs.exists == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+      - name: Install PHPCS + WPCS
+        if: steps.has_php.outputs.exists == 'true'
+        run: |
+          composer require --no-interaction --dev squizlabs/php_codesniffer wp-coding-standards/wpcs || true
+      - name: Run phpcs (WordPress standard)
+        if: steps.has_php.outputs.exists == 'true'
+        run: |
+          vendor/bin/phpcs --standard=WordPress --extensions=php -n . || true
+      - name: Upload phpcs report (text)
+        if: steps.has_php.outputs.exists == 'true'
+        run: vendor/bin/phpcs --standard=WordPress --extensions=php -n --report=full --report-file=phpcs-report.txt || true
+      - uses: actions/upload-artifact@v4
+        if: steps.has_php.outputs.exists == 'true'
+        with:
+          name: phpcs-report
+          path: phpcs-report.txt
+
+  phpstan:
+    name: PHPStan (optional static analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for PHP files
+        id: has_php2
+        run: |
+          if git ls-files '*.php' | grep -q '.'; then echo "exists=true" >> $GITHUB_OUTPUT; else echo "exists=false" >> $GITHUB_OUTPUT; fi
+      - name: Set up PHP
+        if: steps.has_php2.outputs.exists == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+      - name: Install phpstan
+        if: steps.has_php2.outputs.exists == 'true'
+        run: composer require --no-interaction --dev phpstan/phpstan || true
+      - name: Run phpstan (level 5)
+        if: steps.has_php2.outputs.exists == 'true'
+        run: vendor/bin/phpstan analyse --no-progress --error-format=json -l 5 --memory-limit=1G . || true
+      - name: Upload phpstan report
+        if: steps.has_php2.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpstan-report
+          path: phpstan-report.json
